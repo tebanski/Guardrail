@@ -53,18 +53,18 @@ CRITICAL_SAMPLES = const(20)
 
 # dictionary that holds the last CONDITION_WINDOW samples
 CRITICAL_WINDOW = dict(
-    accel_x=deque([], CRITICAL_SAMPLES),  # x-axis linear acceleration
-    accel_y=deque([], CRITICAL_SAMPLES),  # y-axis linear acceleration
-    accel_z=deque([], CRITICAL_SAMPLES),  # z-axis linear acceleration
-    anglv_x=deque([], CRITICAL_SAMPLES),  # x-axis angular velocity
-    anglv_y=deque([], CRITICAL_SAMPLES),  # y-axis angular velocity
-    anglv_z=deque([], CRITICAL_SAMPLES),  # z-axis angular velocity
-    mag_x=deque([], CRITICAL_SAMPLES),  # x-axis compas reading,
-    mag_y=deque([], CRITICAL_SAMPLES),  # y-axis compas reading
-    mag_z=deque([], CRITICAL_SAMPLES),  # z-axis compas reading
-    deg_long=deque([], CRITICAL_SAMPLES),  # gps longtitude in degrees
-    deg_lat=deque([], CRITICAL_SAMPLES), # gps latitude in degrees
-    speed=deque([], CRITICAL_SAMPLES)
+    accel_x=deque((), CRITICAL_SAMPLES),  # x-axis linear acceleration
+    accel_y=deque((), CRITICAL_SAMPLES),  # y-axis linear acceleration
+    accel_z=deque((), CRITICAL_SAMPLES),  # z-axis linear acceleration
+    anglv_x=deque((), CRITICAL_SAMPLES),  # x-axis angular velocity
+    anglv_y=deque((), CRITICAL_SAMPLES),  # y-axis angular velocity
+    anglv_z=deque((), CRITICAL_SAMPLES),  # z-axis angular velocity
+    mag_x=deque((), CRITICAL_SAMPLES),  # x-axis compas reading,
+    mag_y=deque((), CRITICAL_SAMPLES),  # y-axis compas reading
+    mag_z=deque((), CRITICAL_SAMPLES),  # z-axis compas reading
+    deg_long=deque((), CRITICAL_SAMPLES),  # gps longtitude in degrees
+    deg_lat=deque((), CRITICAL_SAMPLES), # gps latitude in degrees
+    speed=deque((), CRITICAL_SAMPLES)
   )
 
 # field order for critical samples
