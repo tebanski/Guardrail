@@ -16,7 +16,7 @@ import uos
 from micropython import const
 from ucollections import deque, namedtuple
 from ustruct import pack
-from m5stack import time
+from m5stack import lcd, time
 from mpu6050_fire import MPU6050
 from fusion import Fusion
 
