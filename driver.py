@@ -18,7 +18,7 @@ from ucollections import deque, namedtuple
 from ustruct import pack
 from m5stack import time
 from mpu6050_fire import MPU6050
-from fusion import fusion
+from fusion import Fusion
 
 
 # display readings on M5STACK LCD screen
