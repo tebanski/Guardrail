@@ -14,6 +14,7 @@ import micropython
 import uos
 
 from micropython import const
+from machine import Timer
 from ucollections import deque, namedtuple
 from ustruct import pack
 from m5stack import lcd, time
