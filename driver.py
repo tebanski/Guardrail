@@ -9,18 +9,23 @@
 #
 
 
-import gc
 import micropython
+import machine
 import uos
 import uio
 
-from micropython import const
-from machine import Timer
 from ucollections import deque, namedtuple
 from ustruct import pack
 from m5stack import lcd, time
 from fusion import Fusion
 
+import filemgmt
+
+
+# allocate buffer for emergency exceptions
+micropython.alloc_emergency_exception_buf(200)
+
+# use M5STACK FIRE as the hardware platform
 USE_FIRE = False
 
 if USE_FIRE:
@@ -28,14 +33,11 @@ if USE_FIRE:
 else:
   from mpu6050_go import MPU6050
 
-# display readings on M5STACK LCD screen
-DISPLAY_READINGS = True
+# use timers for the main loop
+USE_TIMERS = True
 
 # log the readings in the SD card
 LOG_READINGS = True
-
-# toggle to use cooked orientation readings from 9DoF sensor:
-ORIENT_COOKED = False
 
 # font to use for LCD display
 DISPLAY_FONT = lcd.FONT_Default
@@ -44,60 +46,27 @@ DISPLAY_FONT = lcd.FONT_Default
 PACKET_TYPE = 4
 
 # number of msecs to sleep between each DOF and GPS readings
-SAMPLE_INTERVAL = 200
+SAMPLE_INTERVAL_MSEC = 200
 
 # path where to write data files to
-DATA_PATH = "/sd/__DATA__"
+DATA_PATH = filemgmt.SOURCE_DIR
 
 # format to use for packing data for storage and transmission
-PACK_FORMAT = "QLLBBdddddddddddd"
+# PACK_FORMAT = "QLLBBdddddddddddd"
+PACK_FORMAT = "QLLBBffffffffffff"
 
 # number of seconds for each sample window commited to a log
-SAMPLE_WINDOW_SEC = 300
+SAMPLE_WINDOW_SEC = 120
+
+# number of seconds to wait before migrating data from flash to SD card
+MIGRATE_INTERVAL_MSEC = 300 * 1000
 
 # maximum number of samples per data file
-MAX_ENTRIES_PER_FILE = int(SAMPLE_WINDOW_SEC * (1000 / SAMPLE_INTERVAL))
+MAX_ENTRIES_PER_FILE = int(SAMPLE_WINDOW_SEC * (1000 / SAMPLE_INTERVAL_MSEC))
 
-# number of samples to consider when checking conditions
-CRITICAL_SAMPLES = 20
-
-# dictionary that holds the last CONDITION_WINDOW samples
-CRITICAL_WINDOW = dict(
-    accel_x=deque((), CRITICAL_SAMPLES),  # x-axis linear acceleration
-    accel_y=deque((), CRITICAL_SAMPLES),  # y-axis linear acceleration
-    accel_z=deque((), CRITICAL_SAMPLES),  # z-axis linear acceleration
-    anglv_x=deque((), CRITICAL_SAMPLES),  # x-axis angular velocity
-    anglv_y=deque((), CRITICAL_SAMPLES),  # y-axis angular velocity
-    anglv_z=deque((), CRITICAL_SAMPLES),  # z-axis angular velocity
-    mag_x=deque((), CRITICAL_SAMPLES),  # x-axis compas reading,
-    mag_y=deque((), CRITICAL_SAMPLES),  # y-axis compas reading
-    mag_z=deque((), CRITICAL_SAMPLES),  # z-axis compas reading
-    deg_long=deque((), CRITICAL_SAMPLES),  # gps longtitude in degrees
-    deg_lat=deque((), CRITICAL_SAMPLES), # gps latitude in degrees
-    speed=deque((), CRITICAL_SAMPLES)
-  )
-
-# field order for critical samples
-CRITICAL_FIELDS = [
-    "accel_x", "accel_y", "accel_z", "anglv_x", "anglv_y", "anglv_z"
-    "mag_x", "mag_y", "mag_z", "deg_lat", "deg_long", "speed"]
-
-# field order in in data packet
-PACKET_FIELDS = [
-    "timestamp", "org_tag", "unit_tag", "packet_type", "status",
-    "accel_x", "accel_y", "accel_z", "anglv_x", "anglv_y", "anglv_z"
-    "mag_x", "mag_y", "mag_z", "deg_lat", "deg_long", "speed"]
-
-GRpacket = namedtuple("GRpacket", PACKET_FIELDS)
-
-# breakpoints for evaluationg readings (WARN, DANGER, IMPACT)
-ACCELETRATION_SLOPES = (0.57735, 1.0, 1.73205)
-
-# acceleration burst duration in number of samples that may indicate an impact
-ACCELERATION_IMPACT_WINDOW = 4
-
-# acceleration peak in m/s^2 during burst duration that may indicate an impact
-ACCELERATION_BURST_PEAK = 1.5
+# timers variables to use
+TIMER_COLLECT = machine.Timer(0)
+TIMER_MIGRATE = machine.Timer(1)
 
 # report status when transmitting data sets
 STATUS_NORMAL = 0x00
@@ -107,15 +76,11 @@ STATUS_IMPACT = 0x04
 STATUS_FALL = 0x08
 STATUS_ROLL = 0x10
 
-# allocate buffer for emergency exceptions
-micropython.alloc_emergency_exception_buf(100)
-
 # attach to 9DoF module
 if USE_FIRE:
     sensor = MPU6050()
 else:
-    from machine import I2C
-    i2c = I2C(scl=22, sda=21, speed=400000)
+    i2c = machine.I2C(scl=22, sda=21, speed=400000)
     sensor = MPU6050(i2c)
 
 # attach to GPS module
@@ -123,13 +88,16 @@ receiver = None
 gps = None
 
 # number of entries in the current data file
-file_entries = 0
+FILE_ENTRIES = 0
 
-# create data_packet object for sample readings
-data_packet = None
+# create DATA_PACKET object for sample readings
+DATA_PACKET = None
 
 # global file handle for currently-opened log file
-fh = None
+FH_ACTIVE = None
+
+# filename of currently active log file
+LOG_NAME = None
 
 
 def get_unit_tag(file_path="unit.tag"):
@@ -142,65 +110,89 @@ def get_org_tag(file_path="org.tag"):
   return 1
 
 
-def display_header():
-  lcd.clear()
-  lcd.font(DISPLAY_FONT)
-  lcd.text(60, 20, "X-ACCEL:")
-  lcd.text(60, 40, "Y-ACCEL:")
-  lcd.text(60, 60, "Z-ACCEL:")
-  if ORIENT_COOKED:
-    lcd.text(60, 80, "HEADING:")
-    lcd.text(88, 100, "PITCH:")
-    lcd.text(102, 120, "ROLL:")
-  else:
-    lcd.text(88, 80, "X-ANGV:")
-    lcd.text(88, 100, "Y-ANGV:")
-    lcd.text(88, 120, "Z-ANGV:")
-  lcd.text(102, 140, "LATI:")
-  lcd.text(102, 160, "LONG:")
-  lcd.text(88, 180, "SPEED:")
+def create_log_file(dir_path=DATA_PATH, retry_limit=3, retry_wait_ms=5):
+  global FILE_ENTRIES
+  global FH_ACTIVE
+  global LOG_NAME
 
-
-def clear_data_dir(dir_path=DATA_PATH):
-  pass
-
-
-def create_data_file(dir_path=DATA_PATH, fh=None):
-  filename = "{}_{}.dat".format(
+  # there is already an open log file
+  if FH_ACTIVE:
+    try:
+      FH_ACTIVE.close()
+    except OSError:
+      # file may have been inadvertently moved
+      print("WARN: Failed to close log file {0}.".format(LOG_NAME))
+    else:
+      # rename the file (add extension) so it can be migrated to the SD card
+      try:
+        os.rename(LOG_NAME, "{0}.dat".format(LOG_NAME))
+      except OSError:
+        # perhaps the file got moved somehow
+        print("WARN: Failed to rename log file {0}.".format(LOG_NAME))
+  # create the new name for the log file using the current timestamp
+  filename = "{}_{}".format(
       int(time.time() * 1000000), MAX_ENTRIES_PER_FILE)
-  file_path = "{0}/{1}".format(dir_path, filename)
-  if fh:
-    fh.close()
-  return open(file_path, "wb", buffering=0x00)
+  LOG_NAME = "{0}/{1}".format(dir_path, filename)
+  is_created = False
+  for retry_count in range(retry_limit):
+    try:
+      FH_ACTIVE = open(LOG_NAME, "wb")
+    except OSError:
+      is_created = False
+      time.sleep_ms(retry_wait_ms)
+      continue
+    else:
+      FILE_ENTRIES = 0
+      is_created = True
+      break
+  return is_created
 
 
-def collect_readings(timer):
-  global data_packet
+def collect_sensor_readings(timer):
+  global FILE_ENTRIES
   
   timestamp = int(time.time() * 1000000)
-  sensor_readings = _collect_9dof(sensor)
+  sensor_readings = dict(
+      a=sensor.acceleration, g=sensor.orientation, m=sensor.direction)
   receiver_readings = _collect_gps(gps, receiver)
-  data_packet = _build_packet(timestamp, sensor_readings, receiver_readings)
-  # _push_packet(data_packet)
-  gc.mem_free()
-
-
-def _collect_9dof(sensor):
-  # acceleration = sensor.acceleration
-  # gyro = sensor.orientation
-  # magnetic = sensor.direction
-  # if ORIENT_COOKED:
-  #   acc.update(acceleration, gyro, magnetic)
-  #   gyro = (acc.heading, acc.pitch, acc.roll)
-  return dict(a=sensor.acceleration, g=sensor.orientation, m=sensor.direction)
+  raw_packet = _build_packet(timestamp, sensor_readings, receiver_readings)
+  data_packet = pack(PACK_FORMAT, *raw_packet)
+  if FILE_ENTRIES >= MAX_ENTRIES_PER_FILE:
+    mesg = ("INFO: Current log file {0} already has {1} entries. " + \
+            "Closing and creating new log file.")
+    print(mesg.format(LOG_NAME, FILE_ENTRIES))
+    is_created = create_log_file()
+    if not is_created:
+      mesg = "FATAL: Failed to create new log file {0}. Restarting device." 
+      print(mesg.format(LOG_NAME))
+      shutdown()
+      machine.reset()
+  retry_limit=3
+  retry_wait_ms = 5
+  is_flushed = False
+  for retry_count in range(retry_limit):
+    try:
+      FH_ACTIVE.write(data_packet)
+    except OSError:
+      is_flushed = False
+      time.sleep_ms(retry_wait_ms)
+      continue
+    else:
+      FH_ACTIVE.flush()
+      FILE_ENTRIES += 1
+      is_flushed = True
+      break
+  if not is_flushed:
+    print("WARN: Lost write for log file {0} caught.".format(LOG_NAME))
+    print("DEBUG: packet <{0}>.".format(data_packet))
 
 
 def _collect_gps(gps, receiver):
   if receiver:
     _ = [gps.update(chr(char)) for sentence in receiver.sentences()
          for char in sentences]
-    return (gps.latitude, gps.longtitude, gps.speed)
-  return (0.0, 0.0, 0.0)
+    return dict(lat=gps.latitude, lng=gps.longtitude, vel=gps.speed)
+  return dict(lat=0.0, lng=0.0, vel=0.0)
 
 
 def _build_packet(timestamp, dof_sensor, gps_receiver):
@@ -212,80 +204,80 @@ def _build_packet(timestamp, dof_sensor, gps_receiver):
       dof_sensor["a"][0], dof_sensor["a"][1], dof_sensor["a"][2],
       dof_sensor["g"][0], dof_sensor["g"][1], dof_sensor["g"][2],
       dof_sensor["m"][0], dof_sensor["m"][1], dof_sensor["m"][2],
-      gps_receiver[0], gps_receiver[1], gps_receiver[2])
-  # packet = GRpacket(_packet)
+      gps_receiver["lat"], gps_receiver["lng"], gps_receiver["vel"])
   return packet
 
 
-  def _push_packet(packet, field_names=CRITICAL_FIELDS):
-    # needs to be re-writted for packet tuple
-    _packet = packet._asdict()
-    _ = [CRITICAL_WINDOW[field_name].append(_packet[field_name])
-         for field_name in field_names]
-
-
 def display_readings(timer):
-  lcd.text(60, 20, "X-ACCEL: {:+3.4f} m/s/s\r".format(data_packet[5]))
-  lcd.text(60, 40, "Y-ACCEL: {:+3.4f} m/s/s\r".format(data_packet[6]))
-  lcd.text(60, 60, "Z-ACCEL: {:+3.4f} m/s/s\r".format(data_packet[7]))
-  lcd.text(60, 80, "X-ANGV: {:+3.4f} deg/s\r".format(data_packet[8]))
-  lcd.text(60, 100, "Y-ANGV: {:+3.4f} deg/s\r".format(data_packet[9]))
-  lcd.text(60, 120, "Z-ANGV: {:+3.4f} deg/s\r".format(data_packet[10]))
-  lcd.text(102, 140, "LATI: {:+3.4f} deg\r".format(data_packet[14]))
-  lcd.text(102, 160, "LONG: {:+3.4f} deg\r".format(data_packet[15]))
-  lcd.text(88, 180, "SPEED: {:+3.4f} m/s\r".format(data_packet[16]))
-
-
-def store_readings(timer):
-  global file_entries
-  global data_packet
-  global fh
-  if file_entries >= MAX_ENTRIES_PER_FILE:
-    print(
-        "INFO: Current log file already has {} ".format(file_entries) + \
-        "entries. Closing and creating new log file.")
-    fh = create_data_file(fh=fh)
-    file_entries = 0
-  fh.write(pack(PACK_FORMAT, *data_packet))
-  fh.flush()
-  fh.flush()
-  file_entries += 1
+  lcd.text(60, 20, "X-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[5]))
+  lcd.text(60, 40, "Y-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[6]))
+  lcd.text(60, 60, "Z-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[7]))
+  lcd.text(60, 80, "X-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[8]))
+  lcd.text(60, 100, "Y-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[9]))
+  lcd.text(60, 120, "Z-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[10]))
+  lcd.text(102, 140, "LATI: {:+3.4f} deg\r".format(DATA_PACKET[14]))
+  lcd.text(102, 160, "LONG: {:+3.4f} deg\r".format(DATA_PACKET[15]))
+  lcd.text(88, 180, "SPEED: {:+3.4f} m/s\r".format(DATA_PACKET[16]))
 
 
 def evaluate_readings():
   return STATUS_NORMAL
 
 
-def transmit_readings():
-  pass
+def migrate_files(timer):
+  status = filemgmt.migrate(
+      source_dir=filemgmt.SOURCE_DIR, target_dir=filemgmt.TARGET_DIR)
+  if not status:
+    print("FATAL: File migration failed. Restarting device.")
+    machime.reset()
 
 
-clear_data_dir()
-display_header()
-if LOG_READINGS:
-  # mount SD card
-  uos.mountsd()
-  # file handle for current data file
-  fh = create_data_file()
-  
-# initialize the display LCD
-lcd.init(
-  lcd.M5STACK, width=240, height=320, rst_pin=33, backl_pin=32, miso=19,
-  mosi=23, clk=18, cs=14, dc=27, bgr=True, backl_on=1)
+def init():
+  global FH_ACTIVE
+    
+  if filemgmt.mountsd():
+    print("INFO: SD device mounted on /sd.")
+    time.sleep(2)
+    if  filemgmt.check_dir(filemgmt.SOURCE_DIR) \
+        and filemgmt.check_dir(filemgmt.TARGET_DIR):
+      # move any file found in /flash/__DATA__ to /sd/__DATA__
+      print(
+          "INFO: Migrating any existing files in {0} to {1}.".format(
+              filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
+      filemgmt.migrate_all()
+      # initialize the display LCD
+      print("INFO: Initializing LCD screen.")
+      lcd.init(
+          lcd.M5STACK, width=240, height=320, rst_pin=33, backl_pin=32,
+          miso=19, mosi=23, clk=18, cs=14, dc=27, bgr=True, backl_on=1)
+      # create initial log file
+      is_created = create_log_file()
+      if not is_created:
+        mesg = "FATAL: Failed to create new log file {0}. Restarting device." 
+        print(mesg.format(LOG_NAME))
+        machine.reset()
+      print("INFO: Starting main event loop.")
+      TIMER_COLLECT.init(
+          period=SAMPLE_INTERVAL_MSEC, mode=machine.Timer.PERIODIC,
+          callback=collect_sensor_readings)
+      
+      TIMER_MIGRATE.init(
+          period=MIGRATE_INTERVAL_MSEC, mode=machine.Timer.PERIODIC,
+          callback=migrate_files)
+      print("INFO: Initialization complete.")
+      return True
+    else:
+      print("FATAL: Either {0} or {1} was not found.".format(
+        filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
+  return False
 
-timer_0 = Timer(0)
-timer_0.init(
-  period=SAMPLE_INTERVAL, mode=Timer.PERIODIC, callback=collect_readings)
 
-if LOG_READINGS:
-  timer_1 = Timer(1)
-  timer_1.init(
-    period=SAMPLE_INTERVAL, mode=Timer.PERIODIC, callback=store_readings)
-else:
-  timer_1 = Timer(1)
-  timer_1.init(
-    period=500, mode=Timer.PERIODIC, callback=display_readings)
-
-# timer_6 = Timer(6)
-# timer_6.init(
-#   period=600000, mode=Timer.PERIODIC, callback=transmit_readings)
+def shutdown():
+  print("INFO: Stopping main event loop.")
+  TIMER_COLLECT.deinit()
+  TIMER_MIGRATE.deinit()
+  print("INFO: Migrating any existing files in {0} to {1}.".format(
+      filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
+  filemgmt.migrate_all()
+  print("INFO: Shutdown complete.")
+  return True
