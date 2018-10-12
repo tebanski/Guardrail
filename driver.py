@@ -9,35 +9,24 @@
 #
 
 
+import os
 import micropython
 import machine
-import uos
 import uio
 
-from ucollections import deque, namedtuple
 from ustruct import pack
+from machine import Neopixel as npx
 from m5stack import lcd, time
-from fusion import Fusion
 
 import filemgmt
 
 
 # allocate buffer for emergency exceptions
-micropython.alloc_emergency_exception_buf(200)
+micropython.alloc_emergency_exception_buf(100)
 
+# ------ global constants ------
 # use M5STACK FIRE as the hardware platform
 USE_FIRE = False
-
-if USE_FIRE:
-  from mpu6050_fire import MPU6050
-else:
-  from mpu6050_go import MPU6050
-
-# use timers for the main loop
-USE_TIMERS = True
-
-# log the readings in the SD card
-LOG_READINGS = True
 
 # font to use for LCD display
 DISPLAY_FONT = lcd.FONT_Default
@@ -64,10 +53,6 @@ MIGRATE_INTERVAL_MSEC = 300 * 1000
 # maximum number of samples per data file
 MAX_ENTRIES_PER_FILE = int(SAMPLE_WINDOW_SEC * (1000 / SAMPLE_INTERVAL_MSEC))
 
-# timers variables to use
-TIMER_COLLECT = machine.Timer(0)
-TIMER_MIGRATE = machine.Timer(1)
-
 # report status when transmitting data sets
 STATUS_NORMAL = 0x00
 STATUS_WARN = 0x01
@@ -76,28 +61,42 @@ STATUS_IMPACT = 0x04
 STATUS_FALL = 0x08
 STATUS_ROLL = 0x10
 
-# attach to 9DoF module
-if USE_FIRE:
-    sensor = MPU6050()
-else:
-    i2c = machine.I2C(scl=22, sda=21, speed=400000)
-    sensor = MPU6050(i2c)
 
-# attach to GPS module
-receiver = None
-gps = None
-
+# ------ global variables ------
 # number of entries in the current data file
-FILE_ENTRIES = 0
+_FILE_ENTRIES = 0
 
-# create DATA_PACKET object for sample readings
-DATA_PACKET = None
+# create _DATA_PACKET object for sample readings
+_DATA_PACKET = None
 
 # global file handle for currently-opened log file
-FH_ACTIVE = None
+_FH_ACTIVE = None
 
 # filename of currently active log file
-LOG_NAME = None
+_LOG_NAME = None
+
+
+# ------ global (static) object instances ------
+# global 6DoF sensor reference
+__SENSOR = None
+
+# global GPS receiver reference 
+__RECEIVER = None
+
+# global GPS I2C interface reference
+__GPS = None
+
+# global timer instances to use
+__TIMER_COLLECT = machine.Timer(0)
+__TIMER_MIGRATE = machine.Timer(1)
+
+# global Neopixel instance reference
+__NPX = None
+
+
+def printmesg(mesg):
+  print(mesg)
+  lcd.print(mesg + "\n")
 
 
 def get_unit_tag(file_path="unit.tag"):
@@ -110,61 +109,147 @@ def get_org_tag(file_path="org.tag"):
   return 1
 
 
+def set_time(nist_fqdn="time.nist.gov"):
+  printmesg("INFO: Synchronizing time for ntp host {0}".format(nist_fqdn))
+  rtc = machine.RTC()
+  rtc.ntp_sync(server=nist_fqdn)
+
+
+def init_lcd():
+  printmesg("INFO: Initializing LCD screen.")
+  lcd.init(
+      lcd.M5STACK, width=240, height=320, rst_pin=33, backl_pin=32,
+      miso=19, mosi=23, clk=18, cs=14, dc=27, bgr=True, backl_on=1)
+  lcd.clear()
+  lcd.setCursor(0, 0)
+  lcd.setColor(lcd.ORANGE)
+
+
+def init_ledbar():
+  global __NPX
+
+  # printmesg("INFO: Initializing Neopixel device.")
+  __NPX = npx(machine.Pin(15), 24)
+  __NPX.clear()
+
+
+def shutdown_ledbar():
+  if __NPX:
+    # printmesg("INFO: Shutting down Neopixel device.")
+    __NPX.clear()
+    __NPX.deinit()
+
+
+def init_6dof_sensor(use_fire=USE_FIRE):
+  global __SENSOR
+
+  printmesg("INFO: Initializing 6DOF sensor.")
+  if use_fire:
+    from mpu6050_fire import MPU6050
+
+    __SENSOR = MPU6050()
+  else:
+    from mpu6050_go import MPU6050
+
+    i2c = machine.I2C(
+      scl=machine.Pin(22), sda=machine.Pin(21), speed=400000)
+    __SENSOR = MPU6050(i2c)
+
+
+def shutdown_6dof_sensor():
+  if __SENSOR:
+    printmesg("INFO: Shutting down 6DOF sensor.")
+    __SENSOR.i2c.deinit()
+
+
+def display_splash(filename="/flash/splash.jpg"):
+  time.sleep_ms(2000)
+  lcd.clear()
+  lcd.image(58, 21, filename)
+
+
+def activate_ledbar(hue=npx.GREEN, sat=1.0, max_bri=0.5, steps=24,
+                    step_delay_ms=60):
+  bri_step = max_bri / steps
+  bri = 0.0
+  for step in range(steps):
+    __NPX.clear()
+    for led in range(24):
+      __NPX.setHSB(led, hue, sat, bri, 1, False)
+    bri += bri_step
+    __NPX.show()
+    time.sleep_ms(step_delay_ms)
+
+
+def deactivate_ledbar(hue=npx.GREEN, sat=1.0, max_bri=0.5, steps=24,
+                      step_delay_ms=60):
+  bri_step = max_bri / steps
+  bri = max_bri
+  for step in range(steps):
+    __NPX.clear()
+    for led in range(24):
+      __NPX.setHSB(led, hue, sat, bri, 1, False)
+    bri -= bri_step
+    __NPX.show()
+    time.sleep_ms(step_delay_ms)
+  __NPX.clear()
+
+
 def create_log_file(dir_path=DATA_PATH, retry_limit=3, retry_wait_ms=5):
-  global FILE_ENTRIES
-  global FH_ACTIVE
-  global LOG_NAME
+  global _FILE_ENTRIES
+  global _FH_ACTIVE
+  global _LOG_NAME
 
   # there is already an open log file
-  if FH_ACTIVE:
+  if _FH_ACTIVE:
     try:
-      FH_ACTIVE.close()
+      _FH_ACTIVE.close()
     except OSError:
       # file may have been inadvertently moved
-      print("WARN: Failed to close log file {0}.".format(LOG_NAME))
+      print("WARN: Failed to close log file {0}.".format(_LOG_NAME))
     else:
       # rename the file (add extension) so it can be migrated to the SD card
       try:
-        os.rename(LOG_NAME, "{0}.dat".format(LOG_NAME))
+        os.rename(_LOG_NAME, "{0}.dat".format(_LOG_NAME))
       except OSError:
         # perhaps the file got moved somehow
-        print("WARN: Failed to rename log file {0}.".format(LOG_NAME))
+        print("WARN: Failed to rename log file {0}.".format(_LOG_NAME))
   # create the new name for the log file using the current timestamp
   filename = "{}_{}".format(
       int(time.time() * 1000000), MAX_ENTRIES_PER_FILE)
-  LOG_NAME = "{0}/{1}".format(dir_path, filename)
+  _LOG_NAME = "{0}/{1}".format(dir_path, filename)
   is_created = False
   for retry_count in range(retry_limit):
     try:
-      FH_ACTIVE = open(LOG_NAME, "wb")
+      _FH_ACTIVE = open(_LOG_NAME, "wb")
     except OSError:
       is_created = False
       time.sleep_ms(retry_wait_ms)
       continue
     else:
-      FILE_ENTRIES = 0
+      _FILE_ENTRIES = 0
       is_created = True
       break
   return is_created
 
 
 def collect_sensor_readings(timer):
-  global FILE_ENTRIES
+  global _FILE_ENTRIES
   
   timestamp = int(time.time() * 1000000)
   sensor_readings = dict(
-      a=sensor.acceleration, g=sensor.orientation, m=sensor.direction)
-  receiver_readings = _collect_gps(gps, receiver)
+      a=__SENSOR.acceleration, g=__SENSOR.orientation, m=__SENSOR.direction)
+  receiver_readings = _collect_gps(__GPS, __RECEIVER)
   raw_packet = _build_packet(timestamp, sensor_readings, receiver_readings)
   data_packet = pack(PACK_FORMAT, *raw_packet)
-  if FILE_ENTRIES >= MAX_ENTRIES_PER_FILE:
+  if _FILE_ENTRIES >= MAX_ENTRIES_PER_FILE:
     mesg = ("INFO: Current log file {0} already has {1} entries. " + \
             "Closing and creating new log file.")
-    print(mesg.format(LOG_NAME, FILE_ENTRIES))
+    print(mesg.format(_LOG_NAME, _FILE_ENTRIES))
     is_created = create_log_file()
     if not is_created:
       mesg = "FATAL: Failed to create new log file {0}. Restarting device." 
-      print(mesg.format(LOG_NAME))
+      print(mesg.format(_LOG_NAME))
       shutdown()
       machine.reset()
   retry_limit=3
@@ -172,18 +257,18 @@ def collect_sensor_readings(timer):
   is_flushed = False
   for retry_count in range(retry_limit):
     try:
-      FH_ACTIVE.write(data_packet)
+      _FH_ACTIVE.write(data_packet)
     except OSError:
       is_flushed = False
       time.sleep_ms(retry_wait_ms)
       continue
     else:
-      FH_ACTIVE.flush()
-      FILE_ENTRIES += 1
+      _FH_ACTIVE.flush()
+      _FILE_ENTRIES += 1
       is_flushed = True
       break
   if not is_flushed:
-    print("WARN: Lost write for log file {0} caught.".format(LOG_NAME))
+    print("WARN: Lost write for log file {0} caught.".format(_LOG_NAME))
     print("DEBUG: packet <{0}>.".format(data_packet))
 
 
@@ -209,15 +294,15 @@ def _build_packet(timestamp, dof_sensor, gps_receiver):
 
 
 def display_readings(timer):
-  lcd.text(60, 20, "X-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[5]))
-  lcd.text(60, 40, "Y-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[6]))
-  lcd.text(60, 60, "Z-ACCEL: {:+3.4f} m/s/s\r".format(DATA_PACKET[7]))
-  lcd.text(60, 80, "X-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[8]))
-  lcd.text(60, 100, "Y-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[9]))
-  lcd.text(60, 120, "Z-ANGV: {:+3.4f} deg/s\r".format(DATA_PACKET[10]))
-  lcd.text(102, 140, "LATI: {:+3.4f} deg\r".format(DATA_PACKET[14]))
-  lcd.text(102, 160, "LONG: {:+3.4f} deg\r".format(DATA_PACKET[15]))
-  lcd.text(88, 180, "SPEED: {:+3.4f} m/s\r".format(DATA_PACKET[16]))
+  lcd.text(60, 20, "X-ACCEL: {:+3.4f} m/s/s\r".format(_DATA_PACKET[5]))
+  lcd.text(60, 40, "Y-ACCEL: {:+3.4f} m/s/s\r".format(_DATA_PACKET[6]))
+  lcd.text(60, 60, "Z-ACCEL: {:+3.4f} m/s/s\r".format(_DATA_PACKET[7]))
+  lcd.text(60, 80, "X-ANGV: {:+3.4f} deg/s\r".format(_DATA_PACKET[8]))
+  lcd.text(60, 100, "Y-ANGV: {:+3.4f} deg/s\r".format(_DATA_PACKET[9]))
+  lcd.text(60, 120, "Z-ANGV: {:+3.4f} deg/s\r".format(_DATA_PACKET[10]))
+  lcd.text(102, 140, "LATI: {:+3.4f} deg\r".format(_DATA_PACKET[14]))
+  lcd.text(102, 160, "LONG: {:+3.4f} deg\r".format(_DATA_PACKET[15]))
+  lcd.text(88, 180, "SPEED: {:+3.4f} m/s\r".format(_DATA_PACKET[16]))
 
 
 def evaluate_readings():
@@ -233,51 +318,69 @@ def migrate_files(timer):
 
 
 def init():
-  global FH_ACTIVE
-    
+  # initialize lcd display
+  init_lcd()
+  # initialize led (neopixel) bar
+  init_ledbar()
+  # initialize 6dof sensor
+  init_6dof_sensor()
   if filemgmt.mountsd():
-    print("INFO: SD device mounted on /sd.")
+    printmesg("INFO: SD device mounted on /sd.") 
     time.sleep(2)
+    # check to see if the source and target data migration folders exist
     if  filemgmt.check_dir(filemgmt.SOURCE_DIR) \
         and filemgmt.check_dir(filemgmt.TARGET_DIR):
       # move any file found in /flash/__DATA__ to /sd/__DATA__
-      print(
+      printmesg(
           "INFO: Migrating any existing files in {0} to {1}.".format(
               filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
       filemgmt.migrate_all()
-      # initialize the display LCD
-      print("INFO: Initializing LCD screen.")
-      lcd.init(
-          lcd.M5STACK, width=240, height=320, rst_pin=33, backl_pin=32,
-          miso=19, mosi=23, clk=18, cs=14, dc=27, bgr=True, backl_on=1)
+      # synchronize time with ntp host
+      set_time()
+      # activate the led bar
+      activate_ledbar()
+      # display the splash image
+      display_splash()
       # create initial log file
       is_created = create_log_file()
       if not is_created:
         mesg = "FATAL: Failed to create new log file {0}. Restarting device." 
-        print(mesg.format(LOG_NAME))
+        printmesg(mesg.format(_LOG_NAME))
         machine.reset()
-      print("INFO: Starting main event loop.")
-      TIMER_COLLECT.init(
+      # launch data collection timer
+      printmesg("INFO: Starting main event loop.")
+      __TIMER_COLLECT.init(
           period=SAMPLE_INTERVAL_MSEC, mode=machine.Timer.PERIODIC,
           callback=collect_sensor_readings)
-      
-      TIMER_MIGRATE.init(
+      # launch data migration timer
+      __TIMER_MIGRATE.init(
           period=MIGRATE_INTERVAL_MSEC, mode=machine.Timer.PERIODIC,
           callback=migrate_files)
-      print("INFO: Initialization complete.")
+      printmesg("INFO: Initialization complete.")
       return True
     else:
-      print("FATAL: Either {0} or {1} was not found.".format(
+      printmesg("FATAL: Either {0} or {1} was not found.".format(
         filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
   return False
 
 
 def shutdown():
-  print("INFO: Stopping main event loop.")
-  TIMER_COLLECT.deinit()
-  TIMER_MIGRATE.deinit()
-  print("INFO: Migrating any existing files in {0} to {1}.".format(
+  lcd.clear()
+  printmesg("INFO: Stopping main event loop.")
+  # stop data collection timer
+  __TIMER_COLLECT.deinit()
+  # stop data migration timer
+  __TIMER_MIGRATE.deinit()
+  mesg = ("INFO: Migrating any existing files in {0} to {1}.".format(
       filemgmt.SOURCE_DIR, filemgmt.TARGET_DIR))
+  printmesg(mesg)
+  # move all remaining files in /flash/__DATA__ into /sd/__DATA__
   filemgmt.migrate_all()
-  print("INFO: Shutdown complete.")
+  # stop the 6DF sensor and unregister it from the I2C bus
+  shutdown_6dof_sensor()
+  # power down led bar
+  deactivate_ledbar()
+  # stop neopixel device and free all used resources
+  shutdown_ledbar()
+  printmesg("INFO: Shutdown complete.")
   return True
