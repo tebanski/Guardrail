@@ -91,16 +91,16 @@ class MPU6050(object):
         # sleep_ms(200)
         # # Non-pyb targets may use other than X or Y
         # if isinstance(side_str, str):
-        #     self._mpu_i2c = I2C(side_str)
+        #     self.i2c = I2C(side_str)
         # # Soft or hard I2C instance. See issue #3097
         # elif hasattr(side_str, "readfrom"):
-        #     self._mpu_i2c = side_str
+        #     self.i2c = side_str
         # else:
         #     raise ValueError("Invalid I2C instance")
         # ---------------------------------------------------------------------
-        self._mpu_i2c = I2C(sda=Pin(21), scl=Pin(22), freq=400000)
+        self.i2c = I2C(sda=Pin(21), scl=Pin(22), freq=400000)
         if device_addr is None:
-            devices = set(self._mpu_i2c.scan())
+            devices = set(self.i2c.scan())
             mpus = devices.intersection(set(self._mpu_addr))
             number_of_mpus = len(mpus)
             if number_of_mpus == 0:
@@ -139,7 +139,7 @@ class MPU6050(object):
             memaddr: memory location (i.e., register) within the I2C device
             addr: I2C device address
         """
-        self._mpu_i2c.readfrom_mem_into(addr, memaddr, buf)
+        self.i2c.readfrom_mem_into(addr, memaddr, buf)
 
     def _write(self, data, memaddr, addr):
         """
@@ -150,7 +150,7 @@ class MPU6050(object):
             addr: I2C device address
         """
         self.buf1[0] = data
-        self._mpu_i2c.writeto_mem(addr, memaddr, self.buf1)
+        self.i2c.writeto_mem(addr, memaddr, self.buf1)
 
     def wake(self):
         """
@@ -512,3 +512,4 @@ class MPU6050(object):
     @property
     def direction(self):
         return(0.00, 0.00, 0.00)
+
