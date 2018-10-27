@@ -5,11 +5,13 @@ To use, flash all three files onto your M5STACK and restart.
 
 From REPL, do:
 
+```python
 import driver
 lsp = driver.LargaSensorPlatform(...)
 lsp.start()
-
-## Valid arguments to LargaSensorPlatform:
+```
+## Valid arguments to LargaSensorPlatform():
+```python
   enable_9dof (bool): enables/disables 9dof sensor operation on startup
   enable_gps (bool): enabled/disables GPS receiver operation on startup
   enable_fuse (bool): enables/disables fused data collection for both
@@ -46,3 +48,4 @@ lsp.start()
       data logs; usually from /flash/__DATA__ to /sd/__DATA__
   data_path (str): directory path where data is written to initially
   migrate_path (str): directory path where data is moved to eventually
+```
