@@ -123,7 +123,7 @@ class LargaSensorPlatform(object):
   __migrate_path = filemgmt.TARGET_DIR  # where data is moved to eventually
 
   def __init__(
-         elf, enable_9dof=True, enable_gps=True, enable_fuse=False,
+         self, enable_9dof=True, enable_gps=True, enable_fuse=False,
          enable_migrate=True, log_to_sd=False, enable_network=False,
          accelerometer_fs=mpu6500.ACCEL_FS_SEL_4G,
          accelerometer_so=mpu6500.SF_M_S2, accelerometer_filter=None, 
