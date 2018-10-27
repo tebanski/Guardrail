@@ -4,8 +4,9 @@ LARGA (Guardrail) Vehicle Sensor Platform
 To use, flash the following Micropython build on the M5STACK:
 
 [LoboRis MicroPython for ESP32](https://github.com/loboris/MicroPython_ESP32_psRAM_LoBo/tree/master/MicroPython_BUILD/firmware/esp32_all)
+***NOTE:*** *This build is not configured for OTA updates and the network stack isn't enabled by default.*
 
-NOTE: This build is not configured for OTA updates and the network stack isn't enabled by default.
+Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. 
 
 From REPL, do:
 
