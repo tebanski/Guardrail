@@ -6,15 +6,17 @@ To use, flash the following Micropython build on the M5STACK:
 [LoboRis MicroPython for ESP32](https://github.com/loboris/MicroPython_ESP32_psRAM_LoBo/tree/master/MicroPython_BUILD/firmware/esp32_all)
 ***NOTE:*** *This build is not configured for OTA updates and the network stack isn't enabled by default.*
 
-Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. Make sure that there are '\_\_DATA__' and '\_\_LOG__' (i.e., double underscores) folders in /flash and /sd ***BEFORE*** starting the driver. 
+Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. Make sure that there are '\_\_DATA__' and '\_\_LOG__' (i.e., double underscores) folders in /flash and /sd and that these folder are empty ***BEFORE*** starting the driver. 
 
-From REPL, do:
+To start the driver, from REPL, do:
 
 ```python
 import driver
 lsp = driver.LargaSensorPlatform(...)
 lsp.start()
 ```
+By default, data logs are first created in /flash/\_\_DATA__ and moved to /sd/\_\_DATA__ every two (2) minutes. To write directly to the SD card (i.e., /sd/\_\_DATA__), use the **log_to_sd** argument when instantiating the driver object (i.e., LargaSensorPlatform).
+
 ## Valid arguments to LargaSensorPlatform():
 ```python
 """
