@@ -7,7 +7,7 @@ To use, flash the following Micropython build on the M5STACK:
 
 ***NOTE:*** *This build is not configured for OTA updates and the network stack isn't enabled by default.*
 
-Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. Make sure that there are '\_\_DATA__' and '\_\_LOG__' (i.e., double underscores) folders in /flash and /sd and that these folder are empty ***BEFORE*** starting the driver. 
+Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. Make sure that there are '\_\_DATA__' and '\_\_LOG__' (i.e., double underscores) folders in /flash and /sd and that these folder are empty ***BEFORE*** starting the driver.
 
 To start the driver, from REPL, do:
 
@@ -16,7 +16,7 @@ import driver
 lsp = driver.LargaSensorPlatform(...)
 lsp.start()
 ```
-By default, data logs are first created in /flash/\_\_DATA__ and moved to /sd/\_\_DATA__ every two (2) minutes. To write directly to the SD card (i.e., /sd/\_\_DATA__), use the **log_to_sd** argument when instantiating the driver object (i.e., LargaSensorPlatform).
+By default, data logs are first created in /flash/\_\_DATA__ and moved to /sd/\_\_DATA__ every two (2) minutes. To write directly to the SD card (i.e., /sd/\_\_DATA__), set the **log_to_sd** argument to **True** when instantiating the driver object (i.e., LargaSensorPlatform). Also note that the driver assumes that network services are enabled, by default. Thus, it's default behavior is to stop network services eventhough network services are already disabled by default in the MicroPython kernel. To work around this, set the **enable_network** argument to **True**. 
 
 ## Valid arguments to LargaSensorPlatform():
 ```python
