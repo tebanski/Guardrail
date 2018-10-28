@@ -6,7 +6,7 @@ To use, flash the following Micropython build on the M5STACK:
 [LoboRis MicroPython for ESP32](https://github.com/loboris/MicroPython_ESP32_psRAM_LoBo/tree/master/MicroPython_BUILD/firmware/esp32_all)
 ***NOTE:*** *This build is not configured for OTA updates and the network stack isn't enabled by default.*
 
-Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. 
+Once the new MicroPython kernel has been flashed, restart the device and copy the contents of this branch onto the M5STACK's flash area. Make sure that there are '__DATA__' and '__LOG__' folders in /flash and /sd ***BEFORE*** starting the driver. 
 
 From REPL, do:
 
