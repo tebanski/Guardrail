@@ -1,5 +1,5 @@
 # LARGA (Guardrail)
-LARGA (Guardrail) Vehicle Sensor Platform
+LARGA (Guardrail) Vehicle Motion Sensor Platform
 
 To use, flash the following Micropython build on the M5STACK:
 
