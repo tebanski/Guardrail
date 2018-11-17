@@ -123,7 +123,7 @@ def unpack_logs(log_dir, log_names=None, as_tuple=False):
       if log_type not in unpacked:
         unpacked[log_type] = deque()
       unpacked[log_type].extend(samples)
-    return unpacked
+  return unpacked
 
 
 def unpack_to_csv(log_dir, log_names=None, csv_dir=None, csv_file=None):
